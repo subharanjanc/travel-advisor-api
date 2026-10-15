@@ -25,6 +25,32 @@ app = FastAPI(title="AI Travel Advisor", version="1.0.0",
               description="Plans a trip through conversation. Mini-project, Ironhack AI FT Sept 26.")
 
 
+class StripVercelPrefix:
+    """Deliver /api/index/health to FastAPI as /health.
+
+    vercel.json rewrites every request to /api/index, and the runtime passes that
+    rewritten path through to the ASGI app. Without this, every route 404s in
+    production while working perfectly on localhost.
+    """
+
+    PREFIXES = ("/api/index", "/api")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            path = scope.get("path", "")
+            for prefix in self.PREFIXES:
+                if path == prefix or path.startswith(prefix + "/"):
+                    scope = {**scope, "path": path[len(prefix):] or "/"}
+                    break
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(StripVercelPrefix)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., description="What the traveller said")
     previous_response_id: str | None = Field(
