@@ -17,9 +17,9 @@ from pydantic import BaseModel, Field
 # Vercel imports this file directly rather than as part of a package, so the
 # relative form fails there and the absolute form fails locally. Try both.
 try:
-    from .advisor import MODEL, COVERED_CITIES, answer
+    from .advisor import MODEL, IMAGE_MODEL, SEASONS, COVERED_CITIES, answer, generate_image
 except ImportError:                                  # pragma: no cover
-    from advisor import MODEL, COVERED_CITIES, answer
+    from advisor import MODEL, IMAGE_MODEL, SEASONS, COVERED_CITIES, answer, generate_image
 
 app = FastAPI(title="AI Travel Advisor", version="1.0.0",
               description="Plans a trip through conversation. Mini-project, Ironhack AI FT Sept 26.")
@@ -64,11 +64,27 @@ class Usage(BaseModel):
     seconds: float
 
 
+class ImageRequest(BaseModel):
+    city: str = Field(..., description="City to picture, e.g. Malaga")
+    season: str = Field(..., description="One of: " + ", ".join(SEASONS))
+
+
 class ChatResponse(BaseModel):
     answer: str
     response_id: str
+    image_request: ImageRequest | None = Field(
+        default=None,
+        description="When set, POST this to /image to get the picture the advisor promised.")
     usage: Usage
     estimated_cost_usd: float
+
+
+class ImageResponse(BaseModel):
+    city: str
+    season: str
+    image_base64: str
+    seconds: float
+    note: str
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -82,6 +98,22 @@ def chat(request: ChatRequest):
     except Exception:
         # Never leak upstream error bodies: they can contain request details.
         raise HTTPException(status_code=502, detail="The AI provider could not process the request.")
+
+
+@app.post("/image", response_model=ImageResponse)
+def image(request: ImageRequest):
+    """Generate one picture. Separate from /chat because it takes about 57 seconds.
+
+    Doing this inside a chat turn would exceed the platform's 60s function limit.
+    """
+    try:
+        return generate_image(request.city, request.season)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception:
+        raise HTTPException(status_code=502, detail="The image provider could not be reached.")
 
 
 @app.get("/destinations")
@@ -162,6 +194,36 @@ function add(who, text, cls) {
   window.scrollTo(0, document.body.scrollHeight);
   return d;
 }
+// The picture is a second request on purpose: generating it takes about 57
+// seconds, and the chat turn plus the image would exceed the function limit.
+async function fetchImage(req) {
+  const slot = add("picture", "drawing " + req.city + " in " + req.season + "... 0s");
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    slot.innerHTML = "<div class='who'>picture</div>drawing " + req.city + " in "
+      + req.season + "... " + s + "s <span style='color:var(--muted)'>(about a minute)</span>";
+  }, 1000);
+  try {
+    const r = await fetch("/image", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(req)
+    });
+    clearInterval(tick);
+    const d = await r.json();
+    if (!r.ok) { slot.innerHTML = "<div class='who'>picture failed</div>" + (d.detail || r.status); return; }
+    slot.innerHTML = "<div class='who'>" + d.city + ", " + d.season + "</div>"
+      + "<img src='data:image/png;base64," + d.image_base64 + "' "
+      + "style='width:100%;max-width:420px;border-radius:9px;display:block'>"
+      + "<div style='font-size:12px;color:var(--muted);margin-top:6px'>" + d.note
+      + " Generated in " + d.seconds + "s.</div>";
+  } catch (e) {
+    clearInterval(tick);
+    slot.innerHTML = "<div class='who'>picture failed</div>The image request timed out.";
+  }
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
 async function send() {
   const text = box.value.trim();
   if (!text) return;
@@ -196,6 +258,7 @@ async function send() {
         + data.estimated_cost_usd.toFixed(5) + " - " + u.seconds + "s"
         + (u.tools_called.length ? " - called " + u.tools_called.join(", ") : "");
       log.appendChild(m);
+      if (data.image_request) fetchImage(data.image_request);
     }
   } catch (e) {
     clearInterval(tick);

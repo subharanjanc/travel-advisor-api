@@ -14,7 +14,21 @@ import time
 from openai import OpenAI
 
 MODEL = "gpt-6-luna"
+IMAGE_MODEL = "gpt-image-2.5-sunburst"
 PRICES = {"in": 0.10, "out": 0.50}          # USD per 1M tokens, estimate only
+
+# Measured: one 1024x1024 image takes about 57 seconds. The platform kills a
+# function at 60. So /chat never generates an image - it only says that one is
+# wanted, and the browser asks /image for it in a second request with its own
+# budget. Doing both in one request times out, which is why this looks indirect.
+SEASONS = ("spring", "summer", "autumn", "winter")
+
+SOUTHERN_HEMISPHERE = {"sydney", "melbourne", "auckland", "wellington", "cape town",
+                       "johannesburg", "buenos aires", "santiago", "lima", "perth"}
+
+IMAGE_PROMPT = ("Travel photograph of {city} in {season}. Show the light, weather and planting "
+                "typical of that season there, and what people are wearing. Wide establishing "
+                "shot, natural daylight, no text, no logos, no recognisable faces.")
 
 MAX_TOOL_ROUNDS = 3
 MAX_TOOL_CALLS = 6
@@ -194,46 +208,130 @@ Always:
 - Budgets are rough estimates in EUR. Say so once, in the tips.
 - You may call get_weather. It returns MOCK typical climate, never a live forecast. Label it as
   mock climate data when you use it. If you have not called it, do not state the weather.
+- You may call show_destination_image to show the traveller a picture. Call it whenever they ask
+  what a place looks like, and once alongside an itinerary. The picture is AI-generated and you
+  never see it, so say it is an impression of the season rather than a real photograph, and
+  never describe what is in it.
 - Never invent opening hours, prices of specific venues, or availability.
 - You only discuss travel planning. Decline anything else briefly and return to the trip.
 """
 
 
-TOOLS = [{
-    "type": "function",
-    "name": "get_weather",
-    "strict": True,
-    "description": ("MOCK typical climate for a city/month, not a forecast. Coverage is southern "
-                    "Europe plus a few others; returns 'No climate data on file' for anywhere "
-                    "else. Use before mentioning weather, packing or outdoor plans."),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "city": {"type": "string", "description": "City name, e.g. Lisbon"},
-            "month": {"type": "string", "description": "Month name, e.g. May"},
+TOOLS = [
+    {
+        "type": "function",
+        "name": "get_weather",
+        "strict": True,
+        "description": ("MOCK typical climate for a city/month, not a forecast. Coverage is "
+                        "southern Europe plus a few others; returns 'No climate data on file' "
+                        "for anywhere else. Use before mentioning weather, packing or outdoor "
+                        "plans."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name, e.g. Lisbon"},
+                "month": {"type": "string", "description": "Month name, e.g. May"},
+            },
+            "required": ["city", "month"],
+            "additionalProperties": False,
         },
-        "required": ["city", "month"],
-        "additionalProperties": False,
     },
-}]
+    {
+        "type": "function",
+        "name": "show_destination_image",
+        "strict": True,
+        "description": ("Show the traveller an AI-GENERATED picture of a place in a season. Call "
+                        "it when they ask what somewhere looks like, or to see it, or for a "
+                        "picture or photo. Also call it once when you deliver an itinerary, for "
+                        "the destination in the season they are travelling. It is not a real "
+                        "photograph and you never see the image yourself."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name, e.g. Malaga"},
+                "season": {"type": "string", "enum": list(SEASONS),
+                           "description": "Season there during the trip"},
+            },
+            "required": ["city", "season"],
+            "additionalProperties": False,
+        },
+    },
+]
 
 
-def run_tool(item) -> str:
-    """Allowlist, then validate the model's arguments before touching Python."""
-    if item.name != "get_weather":
-        return json.dumps({"error": "Unsupported tool."})
+def season_for(city: str, month: str) -> str:
+    """Hemisphere decides the season, so a month alone is not enough.
+
+    Sydney in December is summer; Lisbon in December is not.
+    """
+    north = MONTH_SEASON[MONTH_NAMES.index(month.strip().lower()) + 1]
+    if city.strip().lower() in SOUTHERN_HEMISPHERE:
+        return {"winter": "summer", "summer": "winter",
+                "spring": "autumn", "autumn": "spring"}[north]
+    return north
+
+
+def run_tool(item, image_requests: list) -> str:
+    """Allowlist, then validate the model's arguments before touching Python.
+
+    `image_requests` is an out-parameter: the image tool records what the user
+    asked to see rather than generating it, because generating here would blow
+    the function timeout. See the note at the top of this file.
+    """
     try:
         args = json.loads(item.arguments)
-        if not isinstance(args, dict) or set(args) != {"city", "month"}:
-            raise ValueError("Expected city and month only.")
+        if not isinstance(args, dict):
+            raise ValueError("Arguments must be an object.")
         if any(not isinstance(v, str) or not v.strip() or len(v) > 100 for v in args.values()):
-            raise ValueError("City and month must be short non-empty strings.")
-        if args["month"].strip().lower() not in MONTH_NAMES:
-            raise ValueError("Use a full English month name.")
-        return json.dumps({"source": "mock climate table; not a live forecast",
-                           "result": get_weather(**args)})
+            raise ValueError("Values must be short non-empty strings.")
+
+        if item.name == "get_weather":
+            if set(args) != {"city", "month"}:
+                raise ValueError("Expected city and month only.")
+            if args["month"].strip().lower() not in MONTH_NAMES:
+                raise ValueError("Use a full English month name.")
+            return json.dumps({"source": "mock climate table; not a live forecast",
+                               "result": get_weather(**args)})
+
+        if item.name == "show_destination_image":
+            if set(args) != {"city", "season"}:
+                raise ValueError("Expected city and season only.")
+            season = args["season"].strip().lower()
+            if season not in SEASONS:
+                raise ValueError("Season must be spring, summer, autumn or winter.")
+            city = args["city"].strip()
+            image_requests.append({"city": city, "season": season})
+            return json.dumps({
+                "source": "image queued",
+                "result": f"A picture of {city} in {season} will appear below your reply. "
+                          "It is AI-generated, an impression of the season, not a real "
+                          "photograph of that place. Say so, and do not describe the image: "
+                          "you have not seen it."})
+
+        return json.dumps({"error": "Unsupported tool."})
     except (ValueError, TypeError) as error:
         return json.dumps({"error": str(error)})
+
+
+def generate_image(city: str, season: str) -> dict:
+    """Generate one illustrative image. Called by /image, never by /chat."""
+    city, season = city.strip(), season.strip().lower()
+    if not city or len(city) > 100:
+        raise ValueError("City must be a short non-empty string.")
+    if season not in SEASONS:
+        raise ValueError("Season must be spring, summer, autumn or winter.")
+
+    started = time.perf_counter()
+    response = get_client().images.generate(
+        model=IMAGE_MODEL, size="1024x1024",
+        prompt=IMAGE_PROMPT.format(city=city, season=season))
+    return {
+        "city": city,
+        "season": season,
+        "image_base64": response.data[0].b64_json,
+        "seconds": round(time.perf_counter() - started, 1),
+        "note": "AI-generated illustration, not a photograph of the real place.",
+    }
 
 
 def valid_response_id(value) -> bool:
@@ -260,6 +358,7 @@ def answer(message: str, previous_response_id: str | None = None) -> dict:
     started = time.perf_counter()
     tokens_in = tokens_out = 0
     tools_used = []
+    image_requests = []
 
     request = {"model": MODEL, "input": message, "tools": TOOLS,
                "instructions": build_system(), "max_output_tokens": 4000}
@@ -279,7 +378,7 @@ def answer(message: str, previous_response_id: str | None = None) -> dict:
             raise RuntimeError("Tool-call limit reached. Please simplify the request.")
         outputs = []
         for item in calls:
-            result = run_tool(item)
+            result = run_tool(item, image_requests)
             tools_used.append(item.name)
             outputs.append({"type": "function_call_output",
                             "call_id": item.call_id, "output": result})
@@ -299,6 +398,9 @@ def answer(message: str, previous_response_id: str | None = None) -> dict:
     return {
         "answer": reply,
         "response_id": response.id,
+        # The client should now POST this to /image. Only the last one, so a
+        # chatty turn cannot queue up five 57-second generations.
+        "image_request": image_requests[-1] if image_requests else None,
         "usage": {"input_tokens": tokens_in, "output_tokens": tokens_out,
                   "tools_called": tools_used, "seconds": round(time.perf_counter() - started, 2)},
         "estimated_cost_usd": round(cost, 6),
