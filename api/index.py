@@ -168,11 +168,22 @@ async function send() {
   box.value = ""; go.disabled = true;
   add("you", text, "me");
   const pending = add("advisor", "thinking...");
+
+  // A full itinerary takes 20-40 seconds. Without a visible counter the page
+  // looks frozen and people reload, which starts the whole thing again.
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    pending.innerHTML = "<div class='who'>advisor</div>thinking... " + s + "s"
+      + (s > 12 ? "  <span style='color:var(--muted)'>(writing an itinerary takes a while)</span>" : "");
+  }, 1000);
+
   try {
     const r = await fetch("/chat", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ message: text, previous_response_id: prev })
     });
+    clearInterval(tick);
     const data = await r.json();
     if (!r.ok) { pending.innerHTML = "<div class='who'>error " + r.status + "</div>" + md(data.detail || "failed"); }
     else {
@@ -187,7 +198,10 @@ async function send() {
       log.appendChild(m);
     }
   } catch (e) {
-    pending.innerHTML = "<div class='who'>error</div>Could not reach the server.";
+    clearInterval(tick);
+    const s = Math.round((Date.now() - t0) / 1000);
+    pending.innerHTML = "<div class='who'>error</div>No reply after " + s
+      + "s. The server may have timed out. Try a shorter request.";
   }
   go.disabled = false; box.focus();
   window.scrollTo(0, document.body.scrollHeight);

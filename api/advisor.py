@@ -25,7 +25,10 @@ def get_client():
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise RuntimeError("OPENAI_API_KEY is not set on the server.")
-    return OpenAI(api_key=key, timeout=60.0, max_retries=1)
+    # Must finish inside the platform's function budget (60s). A retry would
+    # double the wall clock and get the whole function killed instead, so the
+    # client fails fast and the caller sees a real error rather than a timeout.
+    return OpenAI(api_key=key, timeout=45.0, max_retries=0)
 
 
 # --------------------------------------------------------------- climate data
