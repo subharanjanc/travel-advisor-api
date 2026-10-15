@@ -12,6 +12,7 @@ response_id it received, exactly as the class demo backend does.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from openai import APITimeoutError
 from pydantic import BaseModel, Field
 
 # Vercel imports this file directly rather than as part of a package, so the
@@ -112,8 +113,15 @@ def image(request: ImageRequest):
         raise HTTPException(status_code=422, detail=str(error))
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error))
-    except Exception:
-        raise HTTPException(status_code=502, detail="The image provider could not be reached.")
+    except APITimeoutError:
+        # Distinguished from the generic case on purpose: a timeout here was
+        # once reported as "the provider could not be reached", which sent the
+        # debugging in exactly the wrong direction.
+        raise HTTPException(status_code=504,
+                            detail="The image took too long to generate. Please try again.")
+    except Exception as error:
+        raise HTTPException(status_code=502,
+                            detail=f"Image generation failed ({type(error).__name__}).")
 
 
 @app.get("/destinations")

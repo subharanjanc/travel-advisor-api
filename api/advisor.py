@@ -14,7 +14,12 @@ import time
 from openai import OpenAI
 
 MODEL = "gpt-6-luna"
-IMAGE_MODEL = "gpt-image-2.5-sunburst"
+# Measured on 2026-10-15, same prompt and size:
+#   gpt-image-2.5-flare      27.2s
+#   gpt-image-2.5-sunburst   53.8s
+# The function budget is 60s, so sunburst leaves no margin for a cold start or a
+# slow day. flare it is.
+IMAGE_MODEL = "gpt-image-2.5-flare"
 PRICES = {"in": 0.10, "out": 0.50}          # USD per 1M tokens, estimate only
 
 # Measured: one 1024x1024 image takes about 57 seconds. The platform kills a
@@ -35,14 +40,19 @@ MAX_TOOL_CALLS = 6
 MAX_MESSAGE_CHARS = 2000
 
 
-def get_client():
+def get_client(timeout: float = 45.0):
+    """Timeouts must fit inside the platform's 60s function budget.
+
+    Images need a longer one than chat: 45s was shorter than a generation takes,
+    so every image came back as a 502 that looked like a provider outage and was
+    actually this timeout firing. No retries either - a retry doubles the wall
+    clock and gets the whole function killed, turning a readable error into a
+    silent timeout.
+    """
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise RuntimeError("OPENAI_API_KEY is not set on the server.")
-    # Must finish inside the platform's function budget (60s). A retry would
-    # double the wall clock and get the whole function killed instead, so the
-    # client fails fast and the caller sees a real error rather than a timeout.
-    return OpenAI(api_key=key, timeout=45.0, max_retries=0)
+    return OpenAI(api_key=key, timeout=timeout, max_retries=0)
 
 
 # --------------------------------------------------------------- climate data
@@ -322,7 +332,7 @@ def generate_image(city: str, season: str) -> dict:
         raise ValueError("Season must be spring, summer, autumn or winter.")
 
     started = time.perf_counter()
-    response = get_client().images.generate(
+    response = get_client(timeout=55.0).images.generate(
         model=IMAGE_MODEL, size="1024x1024",
         prompt=IMAGE_PROMPT.format(city=city, season=season))
     return {

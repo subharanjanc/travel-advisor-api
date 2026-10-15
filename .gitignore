@@ -5,3 +5,6 @@ __pycache__/
 *.py[cod]
 .vercel
 .DS_Store
+
+# generated test images
+*.png
