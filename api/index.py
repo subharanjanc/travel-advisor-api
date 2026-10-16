@@ -18,9 +18,11 @@ from pydantic import BaseModel, Field
 # Vercel imports this file directly rather than as part of a package, so the
 # relative form fails there and the absolute form fails locally. Try both.
 try:
-    from .advisor import MODEL, IMAGE_MODEL, SEASONS, COVERED_CITIES, answer, generate_image
+    from .advisor import (MODEL, IMAGE_MODEL, SEASONS, WELCOME, COVERED_CITIES,
+                          answer, generate_image)
 except ImportError:                                  # pragma: no cover
-    from advisor import MODEL, IMAGE_MODEL, SEASONS, COVERED_CITIES, answer, generate_image
+    from advisor import (MODEL, IMAGE_MODEL, SEASONS, WELCOME, COVERED_CITIES,
+                         answer, generate_image)
 
 app = FastAPI(title="AI Travel Advisor", version="1.0.0",
               description="Plans a trip through conversation. Mini-project, Ironhack AI FT Sept 26.")
@@ -207,7 +209,7 @@ PAGE = """<!doctype html>
     <i style="background:#0FB882"></i><i style="background:#2EE6C5"></i>
     <i style="background:#7FE7DC"></i><i style="background:#5CFF4D"></i>
   </div>
-  <div id="log"></div>
+  <div id="log"><div class="msg"><div class="who">advisor</div><!--WELCOME--></div></div>
 </div>
 <div class="bar"><div>
   <input id="box" placeholder="I want 4 days in Seville in August..." autofocus>
@@ -317,4 +319,11 @@ box.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return PAGE
+    """The welcome is rendered statically from the same constant the prompt quotes.
+
+    Two reasons it is not a model call: it costs nothing and appears instantly,
+    and the prompt tells the advisor the traveller has already read it, so nobody
+    gets greeted twice.
+    """
+    safe = WELCOME.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
+    return PAGE.replace("<!--WELCOME-->", safe)

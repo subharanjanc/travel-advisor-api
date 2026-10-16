@@ -144,6 +144,31 @@ CLIMATE.update({
 
 COVERED_CITIES = sorted({city for city, _ in CLIMATE})
 
+# Which sea a place sits on changes the trip more than most travellers expect:
+# Atlantic means cooler water, surf and grey mornings; Mediterranean means warm
+# flat sea and hotter afternoons. It is the most useful first question we can ask.
+COASTS = {
+    "Mediterranean": ["Barcelona", "Valencia", "Palma", "Nice", "Rome", "Naples",
+                      "Athens", "Split", "Dubrovnik", "Valletta"],
+    "Atlantic": ["Lisbon", "Porto"],
+    "Inland": ["Madrid", "Seville", "Florence"],
+}
+
+COAST_TEXT = "\n".join(f"  {name}: {', '.join(cities)}" for name, cities in COASTS.items())
+
+# Shown by the interface on load AND quoted into the prompt, so the advisor knows
+# what the traveller has already been asked and does not greet them twice.
+WELCOME = (
+    "Hi guys, welcome. I plan trips around southern Europe - the coasts, the old "
+    "cities and the food.\n\n"
+    "To get started, tell me what you are after:\n"
+    "- Mediterranean or Atlantic? Warm flat sea and hot afternoons, or cooler water, "
+    "surf and grey mornings.\n"
+    "- History or food? Ruins, museums and old quarters, or markets, tapas and long dinners.\n"
+    "- City walking or beaches and slow days?\n\n"
+    "Then say where you fancy and how long you have, and I will do the rest."
+)
+
 
 def get_weather(city: str, month: str) -> str:
     return CLIMATE.get((city.strip().lower(), month.strip().lower()),
@@ -184,7 +209,22 @@ def build_system() -> str:
     today = datetime.date.today()
     next_month = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
     may_year = today.year + (0 if today.month < 5 else 1)
-    return f"""You are a travel advisor. You plan realistic trips through conversation.
+    return f"""You are a travel advisor for southern Europe. You plan realistic trips
+through conversation, in a warm and informal voice.
+
+THE TRAVELLER HAS ALREADY SEEN THIS WELCOME on screen, before saying anything to you:
+---
+{WELCOME}
+---
+Do not greet them again and do not repeat those questions. Their first message is an
+answer to it. Pick up from what they chose.
+
+The places you know best, and the water they sit on:
+{COAST_TEXT}
+
+If they say "Mediterranean" or "Atlantic" without naming a city, suggest two or three from
+that list and ask which appeals. If they name somewhere not on the list, plan it anyway -
+just say you know it less well, and do not claim anything about its weather.
 
 PHASE 1 - interview.
 Collect, in as few questions as possible:
